@@ -1,0 +1,143 @@
+theory trustee_setup
+
+begin
+
+/* #include "../common/primitives.spthy.inc" */
+
+builtins:
+  symmetric-encryption, asymmetric-encryption, hashing, natural-numbers
+
+restriction OnlyOnce:
+  "All #i #j. OnlyOnce()@i & OnlyOnce()@#j ==> #i = #j"
+
+/* Bootstrapping facts 
+
+Because tamarin does not support indexed arrays, the election configuration message splits
+into  several facts. 
+
+Configuration(cfg_id, trustees[], threshold) =>
+
+The core value, including all relevant election information (n_trustees is denormalized here for convenience)
+
+Configuration(cfg_id, n_trustees, n_threshold) 
+
+The individual trustees that participate
+
+Configuration_Trustee(cfg_id, index, pk_sign, pk_encrypt)
+
+Private key material produces the following fact for each trustee (either as a local only "message", or as a standalone fact produced by the environment)
+
+Keys(pk_sign, pk_encrypt, sk_sign, sk_encrypt)
+
+*/
+
+/* Self rule 
+
+Who am I, given the configuration. This allows the trustees
+to coordinate autonomously.
+*/
+
+rule Self:
+    [ !Keys(sk_sign, sk_encrypt, pk_sign, pk_encrypt),
+      !Configuration_Trustee(cfg_id, %index, pk_sign, pk_encrypt) ]
+  --[ Unique(pk_sign) ]->
+    [ !Self(cfg_id, %index) ]
+
+
+/* This maybe could be OnlyOnce or Unique, but making this condition explicit seems useful for translation */
+
+restriction NotConfigurationSigned:
+"    
+    All cfg_id %self_index #i. NotConfigurationSigned(cfg_id, %self_index)@#i & !ConfigurationSigned(cfg_id, %self_index)@#i ==> F
+"
+
+/* Trigger for signing */
+
+rule SignConfiguration:
+    [ !Self(cfg_id, %self_index),
+      !Configuration(cfg_id, %n_trustees, %n_threshold)
+    ]
+  --[ NotConfigurationSigned(cfg_id, %self_index) ]->
+    [ A_Sign_Configuration(cfg_id, %self_index) ]
+
+/* We split the action (not in the sense of tamarin) from the trigger condition
+so that the translation to code becomes more clear. Action rules act as a
+specification of what the trustee must do given the triggering condition */
+
+rule A_SignConfiguration:
+    [ !Self(cfg_id, %self_index),
+      A_Sign_Configuration(cfg_id, %self_index)
+      // !Clock(%tick),
+    ]
+  --[ !ConfigurationSigned(cfg_id, %self_index) ]->
+    [ !ConfigurationSigned(cfg_id, %self_index)
+        //!Clock(%tick %+ %1)
+    ]
+
+/* Rules to detect when signing is done */
+
+rule ConfigurationSignedUpTo_1:
+    [ !ConfigurationSigned(cfg_id, %1)
+    ]
+  --[ !ConfigurationSignedUpTo(cfg_id, %1) ]->
+    [ !ConfigurationSignedUpTo(cfg_id, %1) ]
+
+rule ConfigurationSignedUpTo_N:
+    [ !ConfigurationSignedUpTo(cfg_id, %i),
+        !ConfigurationSigned(cfg_id, %i %+ %1)
+    ]
+  --[ !ConfigurationSignedUpTo(cfg_id, %i %+ %1) ]->
+    [ !ConfigurationSignedUpTo(cfg_id, %i %+ %1) ]
+
+/* All cfg signing is done */
+
+rule ConfigurationSignedAll:
+    [ 
+        !Configuration(cfg_id, %n_trustees, %n_threshold),
+        !ConfigurationSignedUpTo(cfg_id, %n_trustees)
+    ]
+  --[ !ConfigurationSignedAll(cfg_id) ]->
+    [ !ConfigurationSignedAll(cfg_id) ]
+
+/*
+
+ */
+lemma ConfigurationSignedOnce:
+  "
+    All cfg_id %self_index #i #j.
+            !SignConfiguration(cfg_id, %self_index)@#i &
+            !SignConfiguration(cfg_id, %self_index)@#j
+      ==>
+            #i = #j
+  "
+
+/* We inject some facts that model an execution, and see if the process completes */
+
+rule Execute_3_2:
+    [ 
+      Fr(~id),
+      Fr(~sk_sign_1),
+      Fr(~sk_sign_2),
+      Fr(~sk_sign_3),
+      Fr(~sk_encrypt_1),
+      Fr(~sk_encrypt_2),
+      Fr(~sk_encrypt_3)
+    ]
+  --[ OnlyOnce() ]->
+    [ !Configuration(~id, %1 %+ %1 %+ %1, %1 %+ %1),
+      !Keys(~sk_sign_1, ~sk_encrypt_1, pk(~sk_sign_1), pk(~sk_encrypt_1)),
+      !Keys(~sk_sign_2, ~sk_encrypt_2, pk(~sk_sign_2), pk(~sk_encrypt_2)),
+      !Keys(~sk_sign_3, ~sk_encrypt_3, pk(~sk_sign_3), pk(~sk_encrypt_3)),
+      !Configuration_Trustee(~id, %1, pk(~sk_sign_1), pk(~sk_encrypt_1)),
+      !Configuration_Trustee(~id, %1 %+ %1, pk(~sk_sign_2), pk(~sk_encrypt_2)),
+      !Configuration_Trustee(~id, %1 %+ %1 %+ %1, pk(~sk_sign_3), pk(~sk_encrypt_3)),
+      !Clock(%1)
+    ]
+
+lemma ConfigurationSignedAll_3_2:
+  exists-trace
+  "
+    Ex cfg_id #i. !ConfigurationSignedAll(cfg_id)@#i
+  "
+
+end

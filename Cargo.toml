@@ -1,0 +1,11 @@
+[package]
+name = "t2r"
+version = "0.1.0"
+edition = "2024"
+
+include = ["bindings/rust/*", "grammar.js", "queries/*", "src/*"]
+
+[dependencies]
+tree-sitter-spthy = { path = "tree-sitter-spthy" }
+tree-sitter = "0.25.4"
+tree-sitter-language = "0.1.5"
