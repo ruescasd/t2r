@@ -24,7 +24,9 @@ fn main() {
 
 #[derive(Debug, Clone)]
 struct Fact {
-    text: String, // For now, just store the raw text. Can be parsed further later.
+    original_text: String, // Raw text of the fact
+    name: String,          // Parsed fact name
+    terms: Vec<String>,    // Parsed terms
     is_persistent: bool,
 }
 
@@ -53,6 +55,47 @@ fn extract_rules(root_node: &tree_sitter::Node, source: &[u8]) -> Vec<Rule> {
     }
     rules
 }
+
+// Parses a fact string like "Name(term1, term2)" into ("Name", vec!["term1", "term2"])
+// Returns None if parsing fails.
+fn parse_fact_string(fact_str: &str) -> Option<(String, Vec<String>)> {
+    let fact_str = fact_str.trim();
+    let open_paren = fact_str.find('(');
+    let close_paren = fact_str.rfind(')');
+
+    if let (Some(op_idx), Some(cp_idx)) = (open_paren, close_paren) {
+        if cp_idx != fact_str.len() - 1 { // Ensure ')' is the last character
+            return None;
+        }
+
+        let name = fact_str[..op_idx].trim().to_string();
+        if name.is_empty() {
+            return None;
+        }
+
+        let terms_str = fact_str[op_idx + 1..cp_idx].trim();
+        if terms_str.is_empty() {
+            return Some((name, Vec::new())); // Fact with no arguments
+        }
+
+        let terms = terms_str.split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty()) // Handle potential empty strings if there are trailing commas, though grammar might prevent this
+            .collect();
+        Some((name, terms))
+    } else if open_paren.is_none() && close_paren.is_none() {
+        // It's a fact with no parentheses, e.g., "MyFact" (nullary)
+        let name = fact_str.trim().to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some((name, Vec::new()))
+        }
+    } else {
+        None // Mismatched parentheses or other malformed string
+    }
+}
+
 
 fn extract_rule_details(rule_node: &tree_sitter::Node, source: &[u8]) -> Option<Rule> {
     let rule_name = rule_node
@@ -96,32 +139,39 @@ fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8]) -> Vec<Fact> {
             if i + 1 < parent_node.child_count() {
                 let next_child = parent_node.child(i + 1).unwrap();
                 if next_child.kind() == "persistent_fact" {
-                    let fact_text = next_child.utf8_text(source).unwrap_or("").trim().to_string();
-                    if !fact_text.is_empty() {
-                        facts.push(Fact { text: fact_text, is_persistent: true });
+                    let original_fact_text = next_child.utf8_text(source).unwrap_or("").trim().to_string();
+                    if !original_fact_text.is_empty() {
+                        let (name, terms) = parse_fact_string(&original_fact_text)
+                            .unwrap_or_else(|| (format!("UNPARSED_FACT: {}", original_fact_text), Vec::new()));
+                        facts.push(Fact { original_text: original_fact_text, name, terms, is_persistent: true });
                     }
                     i += 1; // Consume the persistent_fact node
                 }
             }
         } else if child.kind() == "persistent_fact" {
-            // Handles cases like '--[ !Fact ]->' where 'persistent_fact' node includes '!'
-            let fact_text_full = child.utf8_text(source).unwrap_or("").trim().to_string();
-            if !fact_text_full.is_empty() {
-                // Check if it actually starts with '!' as part of its own text
-                let is_persistent = fact_text_full.starts_with('!');
-                let text_to_store = if is_persistent {
-                    fact_text_full.trim_start_matches('!').trim().to_string()
+            let original_fact_text_full = child.utf8_text(source).unwrap_or("").trim().to_string();
+            if !original_fact_text_full.is_empty() {
+                let is_persistent_due_to_prefix = original_fact_text_full.starts_with('!');
+                let text_to_parse = if is_persistent_due_to_prefix {
+                    original_fact_text_full.trim_start_matches('!').trim()
                 } else {
-                    fact_text_full
+                    &original_fact_text_full
                 };
-                 if !text_to_store.is_empty() {
-                    facts.push(Fact { text: text_to_store, is_persistent });
+
+                if !text_to_parse.is_empty() {
+                    let (name, terms) = parse_fact_string(text_to_parse)
+                        .unwrap_or_else(|| (format!("UNPARSED_FACT: {}", text_to_parse), Vec::new()));
+                    facts.push(Fact { original_text: original_fact_text_full.clone(), name, terms, is_persistent: true });
+                } else if is_persistent_due_to_prefix && text_to_parse.is_empty() { // e.g. just "!" which is unlikely a valid fact
+                    facts.push(Fact { original_text: original_fact_text_full.clone(), name: "INVALID_EMPTY_PERSISTENT_FACT".to_string(), terms: Vec::new(), is_persistent: true});
                 }
             }
         } else if child.kind() == "linear_fact" {
-            let fact_text = child.utf8_text(source).unwrap_or("").trim().to_string();
-            if !fact_text.is_empty() {
-                facts.push(Fact { text: fact_text, is_persistent: false });
+            let original_fact_text = child.utf8_text(source).unwrap_or("").trim().to_string();
+            if !original_fact_text.is_empty() {
+                let (name, terms) = parse_fact_string(&original_fact_text)
+                    .unwrap_or_else(|| (format!("UNPARSED_FACT: {}", original_fact_text), Vec::new()));
+                facts.push(Fact { original_text: original_fact_text, name, terms, is_persistent: false });
             }
         }
         i += 1;
