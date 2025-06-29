@@ -1,6 +1,7 @@
 use tree_sitter_spthy::LANGUAGE;
 use tree_sitter;
 use std::fs;
+use std::collections::HashMap; // Removed HashSet
 
 fn main() {
     let mut parser = tree_sitter::Parser::new();
@@ -15,45 +16,78 @@ fn main() {
 
     let source_code = fs::read_to_string("test.spthy").unwrap();
     let rules = extract_rules(&root_node, source_code.as_bytes());
-    println!("{:?}", rules);
+    println!("Filtered Rules: {:?}", rules); // Keep this for now to see filtered rules
+
+    let mut all_facts: Vec<Fact> = Vec::new();
+    for rule in &rules {
+        all_facts.extend(rule.premises.iter().cloned());
+        all_facts.extend(rule.actions.iter().cloned());
+        all_facts.extend(rule.conclusions.iter().cloned());
+    }
+
+    // Store unique facts by (name, arity) -> Fact. This way we keep one representative Fact.
+    let mut unique_facts_map: HashMap<(String, usize), Fact> = HashMap::new();
+    for fact in all_facts {
+        let signature = (fact.name.clone(), fact.terms.len());
+        unique_facts_map.entry(signature).or_insert(fact);
+    }
+
+    let unique_relation_declarations: Vec<&Fact> = unique_facts_map.values().collect();
+
+    println!("\nUnique Facts for Relation Declarations (Name, Arity, Example Terms, IsPersistent):");
+    for fact in &unique_relation_declarations {
+        println!("  - Name: {}, Arity: {}, Terms: {:?}, Persistent: {}", fact.name, fact.terms.len(), fact.terms, fact.is_persistent);
+    }
+
+    let ascent_module_string = generate_ascent_module(&unique_relation_declarations);
+    println!("\nGenerated Ascent Module:\n{}", ascent_module_string);
+
 
     // Read the code again for printing, as `parser.parse` takes ownership
     // let code_for_printing = fs::read_to_string("test.spthy").unwrap();
     // print_tree(&root_node, 0, None, code_for_printing.as_bytes());
 }
 
-#[derive(Debug, Clone)]
-struct Fact {
-    original_text: String, // Raw text of the fact
-    name: String,          // Parsed fact name
-    terms: Vec<String>,    // Parsed terms
-    is_persistent: bool,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)] // Added PartialEq, Eq, Hash for Fact if it were to be stored directly in HashSet
+pub struct Fact {
+    pub original_text: String, // Raw text of the fact
+    pub name: String,          // Parsed fact name
+    pub terms: Vec<String>,    // Parsed terms
+    pub is_persistent: bool,
 }
 
 #[derive(Debug, Clone)]
-struct Rule {
-    name: String,
-    premises: Vec<Fact>,
-    actions: Vec<Fact>,
-    conclusions: Vec<Fact>,
+pub struct Rule {
+    pub name: String,
+    pub premises: Vec<Fact>, // These are Vec<Fact>
+    pub actions: Vec<Fact>,  // These are Vec<Fact>
+    pub conclusions: Vec<Fact>, // These are Vec<Fact>
+    // Add a field to store attributes if needed, or parse directly
 }
 
 fn extract_rules(root_node: &tree_sitter::Node, source: &[u8]) -> Vec<Rule> {
-    let mut rules: Vec<Rule> = Vec::new();
+    let mut rules_vec: Vec<Rule> = Vec::new(); // Renamed to avoid conflict
     for i in 0..root_node.child_count() {
         let node = root_node.child(i).unwrap();
         if node.kind() == "rule" {
+            // A "rule" node might be a simple_rule directly or wrapped
+            // e.g. rule -> simple_rule
+            // or   rule -> diff_rule -> simple_rule (left) & simple_rule (right)
+            // For now, we handle direct simple_rule, or simple_rule as first child.
+            // A more robust way would be to walk the tree for simple_rule nodes.
             let simple_rule_node_opt = node.child_by_field_name("simple_rule")
                 .or_else(|| node.child(0).filter(|c| c.kind() == "simple_rule"));
 
             if let Some(simple_rule_node) = simple_rule_node_opt {
+                // Attempt to extract rule details; this will now filter by role
                 if let Some(rule) = extract_rule_details(&simple_rule_node, source) {
-                    rules.push(rule);
+                    rules_vec.push(rule);
                 }
             }
+            // TODO: Handle diff_rule if necessary, which contains multiple simple_rules
         }
     }
-    rules
+    rules_vec
 }
 
 // Parses a fact string like "Name(term1, term2)" into ("Name", vec!["term1", "term2"])
@@ -97,13 +131,46 @@ fn parse_fact_string(fact_str: &str) -> Option<(String, Vec<String>)> {
 }
 
 
-fn extract_rule_details(rule_node: &tree_sitter::Node, source: &[u8]) -> Option<Rule> {
-    let rule_name = rule_node
-        .child_by_field_name("rule_identifier")
+fn extract_rule_details(simple_rule_node: &tree_sitter::Node, source: &[u8]) -> Option<Rule> {
+    let rule_name_node = simple_rule_node.child_by_field_name("rule_identifier");
+    let rule_name = rule_name_node
         .map(|n| n.utf8_text(source).unwrap_or("").to_string())
         .unwrap_or_else(|| "UnknownRule".to_string());
 
-    if rule_name == "UnknownRule" { // Should not happen if grammar is correct for rules
+    if rule_name == "UnknownRule" {
+        return None;
+    }
+
+    let mut is_trustee_role = false;
+    // Iterate through named children of simple_rule_node to find "rule_attrs"
+    for i in 0..simple_rule_node.named_child_count() {
+        let potential_attrs_node = simple_rule_node.named_child(i).unwrap();
+        if potential_attrs_node.kind() == "rule_attrs" {
+            // Iterate through named children of rule_attrs to find "rule_attr"
+            for j in 0..potential_attrs_node.named_child_count() {
+                let attr_node = potential_attrs_node.named_child(j).unwrap();
+                if attr_node.kind() == "rule_attr" {
+                    // rule_attr can have a named child which is the specific attribute type (e.g. rule_role)
+                    if let Some(specific_attr_node) = attr_node.named_child(0) {
+                        if specific_attr_node.kind() == "rule_role" {
+                            if let Some(role_ident_node) = specific_attr_node.child_by_field_name("role_identifier") {
+                                let role_text = role_ident_node.utf8_text(source).unwrap_or("");
+                                if role_text == "Trustee" {
+                                    is_trustee_role = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if is_trustee_role {
+                break;
+            }
+        }
+    }
+
+    if !is_trustee_role {
         return None;
     }
 
@@ -111,8 +178,9 @@ fn extract_rule_details(rule_node: &tree_sitter::Node, source: &[u8]) -> Option<
     let mut actions = Vec::new();
     let mut conclusions = Vec::new();
 
-    for i in 0..rule_node.child_count() {
-        let child = rule_node.child(i).unwrap();
+    // Iterate through all children to find premise, action_fact, conclusion
+    for i in 0..simple_rule_node.child_count() {
+        let child = simple_rule_node.child(i).unwrap();
         match child.kind() {
             "premise" => {
                 premises.extend(extract_facts(&child, source));
@@ -126,6 +194,7 @@ fn extract_rule_details(rule_node: &tree_sitter::Node, source: &[u8]) -> Option<
             _ => {}
         }
     }
+
     Some(Rule { name: rule_name, premises, actions, conclusions })
 }
 
@@ -177,6 +246,50 @@ fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8]) -> Vec<Fact> {
         i += 1;
     }
     facts
+}
+
+fn generate_ascent_module(unique_facts: &[&Fact]) -> String {
+    let mut rust_keywords_map: HashMap<String, String> = HashMap::new();
+    rust_keywords_map.insert("type".to_string(), "type_".to_string());
+    rust_keywords_map.insert("match".to_string(), "match_".to_string());
+    // Add other keywords as necessary
+
+    let mut module_content = String::new();
+    module_content.push_str("mod generated_relations {\n");
+    module_content.push_str("    use ascent::ascent;\n");
+    module_content.push_str("\n");
+    // TODO: Add type aliases like CfgHash = String; if needed, or infer them.
+    // For now, we can manually list some common ones found in src/ascent.rs
+    // This part can be made more dynamic or configurable later.
+    module_content.push_str("    type CfgHash = String;\n");
+    module_content.push_str("    type SkSign = String;\n");
+    module_content.push_str("    type SkEncrypt = String;\n");
+    module_content.push_str("    type PkSign = String;\n");
+    module_content.push_str("    type PkEncrypt = String;\n");
+    module_content.push_str("    type NTrustee = u32; // Assuming number, can be String if more general\n");
+    module_content.push_str("    type NThreshold = u32; // Assuming number\n");
+    module_content.push_str("    type SelfPosition = u32; // Assuming number\n");
+    module_content.push_str("    type GenericId = String; // For terms like ~id, %index\n");
+    module_content.push_str("\n");
+
+    module_content.push_str("    ascent! {\n");
+
+    for fact in unique_facts {
+        let relation_name = rust_keywords_map.get(&fact.name).unwrap_or(&fact.name).to_string();
+
+        let types: Vec<String> = vec!["GenericId".to_string(); fact.terms.len()]; // Default to GenericId (String)
+        // A more sophisticated type inference could be added here based on term patterns or a predefined map
+        // For example, if fact.name is "Configuration", types might be ["CfgHash", "NTrustee", "NThreshold"]
+        // For now, using GenericId for all.
+
+        let type_list = types.join(", ");
+        module_content.push_str(&format!("        relation {}({});\n", relation_name, type_list));
+    }
+
+    module_content.push_str("    }\n");
+    module_content.push_str("}\n");
+
+    module_content
 }
 
 
