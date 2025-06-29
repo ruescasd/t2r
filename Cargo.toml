@@ -9,3 +9,4 @@ include = ["bindings/rust/*", "grammar.js", "queries/*", "src/*"]
 tree-sitter-spthy = { path = "tree-sitter-spthy" }
 tree-sitter = "0.25.4"
 tree-sitter-language = "0.1.5"
+ascent = "*"

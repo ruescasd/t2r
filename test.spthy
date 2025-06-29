@@ -37,11 +37,11 @@ Who am I, given the configuration. This allows the trustees
 to coordinate autonomously.
 */
 
-rule Self:
+rule Position:
     [ !Keys(sk_sign, sk_encrypt, pk_sign, pk_encrypt),
       !Configuration_Trustee(cfg_id, %index, pk_sign, pk_encrypt) ]
   --[ Unique(pk_sign) ]->
-    [ !Self(cfg_id, %index) ]
+    [ !Position(cfg_id, %index) ]
 
 
 /* This maybe could be OnlyOnce or Unique, but making this condition explicit seems useful for translation */
@@ -54,7 +54,7 @@ restriction NotConfigurationSigned:
 /* Trigger for signing */
 
 rule SignConfiguration:
-    [ !Self(cfg_id, %self_index),
+    [ !Position(cfg_id, %self_index),
       !Configuration(cfg_id, %n_trustees, %n_threshold)
     ]
   --[ NotConfigurationSigned(cfg_id, %self_index) ]->
@@ -65,7 +65,7 @@ so that the translation to code becomes more clear. Action rules act as a
 specification of what the trustee must do given the triggering condition */
 
 rule A_SignConfiguration:
-    [ !Self(cfg_id, %self_index),
+    [ !Position(cfg_id, %self_index),
       A_Sign_Configuration(cfg_id, %self_index)
       // !Clock(%tick),
     ]
