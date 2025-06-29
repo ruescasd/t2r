@@ -67,11 +67,9 @@ specification of what the trustee must do given the triggering condition */
 rule A_SignConfiguration:
     [ !Position(cfg_id, %self_index),
       A_Sign_Configuration(cfg_id, %self_index)
-      // !Clock(%tick),
     ]
   --[ !ConfigurationSigned(cfg_id, %self_index) ]->
     [ !ConfigurationSigned(cfg_id, %self_index)
-        //!Clock(%tick %+ %1)
     ]
 
 /* Rules to detect when signing is done */
@@ -131,7 +129,6 @@ rule Execute_3_2:
       !Configuration_Trustee(~id, %1, pk(~sk_sign_1), pk(~sk_encrypt_1)),
       !Configuration_Trustee(~id, %1 %+ %1, pk(~sk_sign_2), pk(~sk_encrypt_2)),
       !Configuration_Trustee(~id, %1 %+ %1 %+ %1, pk(~sk_sign_3), pk(~sk_encrypt_3)),
-      !Clock(%1)
     ]
 
 lemma ConfigurationSignedAll_3_2:
