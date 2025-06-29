@@ -37,7 +37,7 @@ Who am I, given the configuration. This allows the trustees
 to coordinate autonomously.
 */
 
-rule Position:
+rule Position [role="Trustee"]:
     [ !Keys(sk_sign, sk_encrypt, pk_sign, pk_encrypt),
       !Configuration_Trustee(cfg_id, %index, pk_sign, pk_encrypt) ]
   --[ Unique(pk_sign) ]->
@@ -53,7 +53,7 @@ restriction NotConfigurationSigned:
 
 /* Trigger for signing */
 
-rule SignConfiguration:
+rule SignConfiguration [role="Trustee"]:
     [ !Position(cfg_id, %self_index),
       !Configuration(cfg_id, %n_trustees, %n_threshold)
     ]
@@ -74,13 +74,13 @@ rule A_SignConfiguration:
 
 /* Rules to detect when signing is done */
 
-rule ConfigurationSignedUpTo_1:
+rule ConfigurationSignedUpTo_1 [role="Trustee"]:
     [ !ConfigurationSigned(cfg_id, %1)
     ]
   --[ !ConfigurationSignedUpTo(cfg_id, %1) ]->
     [ !ConfigurationSignedUpTo(cfg_id, %1) ]
 
-rule ConfigurationSignedUpTo_N:
+rule ConfigurationSignedUpTo_N [role="Trustee"]:
     [ !ConfigurationSignedUpTo(cfg_id, %i),
         !ConfigurationSigned(cfg_id, %i %+ %1)
     ]
@@ -89,7 +89,7 @@ rule ConfigurationSignedUpTo_N:
 
 /* All cfg signing is done */
 
-rule ConfigurationSignedAll:
+rule ConfigurationSignedAll [role="Trustee"]:
     [ 
         !Configuration(cfg_id, %n_trustees, %n_threshold),
         !ConfigurationSignedUpTo(cfg_id, %n_trustees)
