@@ -1,7 +1,7 @@
 use tree_sitter_spthy::LANGUAGE;
 use tree_sitter;
 use std::fs;
-use std::collections::HashMap; // Removed HashSet
+use std::collections::{HashMap, HashSet}; // Added HashSet back
 
 fn main() {
     let mut parser = tree_sitter::Parser::new();
@@ -39,7 +39,22 @@ fn main() {
         println!("  - Name: {}, Arity: {}, Terms: {:?}, Persistent: {}", fact.name, fact.terms.len(), fact.terms, fact.is_persistent);
     }
 
-    let ascent_module_string = generate_ascent_module(&unique_relation_declarations);
+    // Step 1: Extract All Unique Term Names
+    let mut unique_term_names: HashSet<String> = HashSet::new();
+    for rule in &rules { // Iterate over filtered rules
+        for fact_collection in [&rule.premises, &rule.actions, &rule.conclusions] {
+            for fact in fact_collection {
+                for term in &fact.terms {
+                    unique_term_names.insert(term.clone());
+                }
+            }
+        }
+    }
+    println!("\nUnique Term Names: {:?}", unique_term_names);
+
+    // Removed to_camel_case test prints from main
+
+    let ascent_module_string = generate_ascent_module(&unique_relation_declarations, &unique_term_names);
     println!("\nGenerated Ascent Module:\n{}", ascent_module_string);
 
 
@@ -88,6 +103,54 @@ fn extract_rules(root_node: &tree_sitter::Node, source: &[u8]) -> Vec<Rule> {
         }
     }
     rules_vec
+}
+
+fn to_camel_case(term_name: &str) -> String {
+    let mut s = term_name.trim();
+
+    if s.starts_with('%') || s.starts_with('~') {
+        s = &s[1..];
+    }
+
+    if s.is_empty() {
+        return "UnnamedTerm".to_string(); // Or handle as an error/option
+    }
+
+    let mut result = String::new();
+    let mut capitalize_next = true;
+
+    for c in s.chars() {
+        if c == '_' || c == ' ' || c == '+' {
+            capitalize_next = true;
+        } else if c.is_alphanumeric() {
+            if capitalize_next {
+                result.push(c.to_ascii_uppercase());
+                capitalize_next = false;
+            } else {
+                result.push(c);
+            }
+        }
+        // Other characters (like internal '%', multiple '+', etc.) are skipped
+    }
+
+    // Ensure first char is indeed uppercase if the string wasn't empty after stripping prefix and processing
+    if !result.is_empty() {
+        let mut chars = result.chars();
+        if let Some(first_char) = chars.next() {
+            if first_char.is_lowercase() { // Should not happen if logic above is correct for non-empty s
+                let rest = chars.as_str();
+                return format!("{}{}", first_char.to_ascii_uppercase(), rest);
+            }
+        }
+    }
+
+
+    // If the result is empty (e.g. term was just "%" or "_"), return a default.
+    if result.is_empty() {
+        "UnnamedTerm".to_string()
+    } else {
+        result
+    }
 }
 
 // Parses a fact string like "Name(term1, term2)" into ("Name", vec!["term1", "term2"])
@@ -248,7 +311,7 @@ fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8]) -> Vec<Fact> {
     facts
 }
 
-fn generate_ascent_module(unique_facts: &[&Fact]) -> String {
+fn generate_ascent_module(unique_facts: &[&Fact], unique_term_names: &HashSet<String>) -> String {
     let mut rust_keywords_map: HashMap<String, String> = HashMap::new();
     rust_keywords_map.insert("type".to_string(), "type_".to_string());
     rust_keywords_map.insert("match".to_string(), "match_".to_string());
@@ -258,31 +321,43 @@ fn generate_ascent_module(unique_facts: &[&Fact]) -> String {
     module_content.push_str("mod generated_relations {\n");
     module_content.push_str("    use ascent::ascent;\n");
     module_content.push_str("\n");
-    // TODO: Add type aliases like CfgHash = String; if needed, or infer them.
-    // For now, we can manually list some common ones found in src/ascent.rs
-    // This part can be made more dynamic or configurable later.
-    module_content.push_str("    type CfgHash = String;\n");
-    module_content.push_str("    type SkSign = String;\n");
-    module_content.push_str("    type SkEncrypt = String;\n");
-    module_content.push_str("    type PkSign = String;\n");
-    module_content.push_str("    type PkEncrypt = String;\n");
-    module_content.push_str("    type NTrustee = u32; // Assuming number, can be String if more general\n");
-    module_content.push_str("    type NThreshold = u32; // Assuming number\n");
-    module_content.push_str("    type SelfPosition = u32; // Assuming number\n");
-    module_content.push_str("    type GenericId = String; // For terms like ~id, %index\n");
+
+    module_content.push_str(&generate_type_aliases(unique_term_names));
     module_content.push_str("\n");
+
+    // Removed the "Potentially Redundant Manual Aliases" section.
+    // We will rely on the generated aliases. If specific mappings like CfgHash -> SomeSpecialString
+    // are needed, that would be a more advanced feature for the type alias generation.
 
     module_content.push_str("    ascent! {\n");
 
     for fact in unique_facts {
         let relation_name = rust_keywords_map.get(&fact.name).unwrap_or(&fact.name).to_string();
 
-        let types: Vec<String> = vec!["GenericId".to_string(); fact.terms.len()]; // Default to GenericId (String)
-        // A more sophisticated type inference could be added here based on term patterns or a predefined map
-        // For example, if fact.name is "Configuration", types might be ["CfgHash", "NTrustee", "NThreshold"]
-        // For now, using GenericId for all.
+        let mut term_type_aliases: Vec<String> = Vec::new();
+        if fact.terms.is_empty() { // Handle 0-arity facts
+            // No types needed for 0-arity relations
+        } else {
+            for term_original_str in &fact.terms {
+                let mut type_alias_name = to_camel_case(term_original_str);
+                if let Some(first_char) = type_alias_name.chars().next() {
+                    if first_char.is_digit(10) {
+                        type_alias_name = format!("T{}", type_alias_name);
+                    }
+                }
+                // If to_camel_case produced "UnnamedTerm" or an empty string that became "UnnamedTerm",
+                // and we don't have specific aliases for those, it might default to an undefined type.
+                // However, our generate_type_aliases skips "UnnamedTerm", "Generic", "Number".
+                // For safety, if the alias is one of these, or empty, default to "Generic".
+                if type_alias_name.is_empty() || type_alias_name == "UnnamedTerm" {
+                    term_type_aliases.push("Generic".to_string());
+                } else {
+                    term_type_aliases.push(type_alias_name);
+                }
+            }
+        }
 
-        let type_list = types.join(", ");
+        let type_list = term_type_aliases.join(", ");
         module_content.push_str(&format!("        relation {}({});\n", relation_name, type_list));
     }
 
@@ -290,6 +365,45 @@ fn generate_ascent_module(unique_facts: &[&Fact]) -> String {
     module_content.push_str("}\n");
 
     module_content
+}
+
+fn generate_type_aliases(term_names: &HashSet<String>) -> String {
+    let mut type_aliases_str = String::new();
+    type_aliases_str.push_str("    // ---- Base Types ----\n");
+    type_aliases_str.push_str("    type Generic = String;\n");
+    type_aliases_str.push_str("    type Number = u32;\n");
+    type_aliases_str.push_str("    // ---- Generated Term Aliases ----\n");
+
+    let mut sorted_term_names: Vec<String> = term_names.iter().cloned().collect();
+    sorted_term_names.sort(); // Sort for consistent output order
+
+    for term_name_original in sorted_term_names {
+        let mut alias_name = to_camel_case(&term_name_original);
+
+        // Ensure alias_name is a valid Rust identifier.
+        // If it starts with a digit (after to_camel_case, which should make it non-empty), prefix with "T".
+        if let Some(first_char) = alias_name.chars().next() {
+            if first_char.is_digit(10) {
+                alias_name = format!("T{}", alias_name);
+            }
+        }
+
+        // Also, avoid re-defining "Generic" or "Number" or if it became empty/default from to_camel_case.
+        if alias_name == "Generic" || alias_name == "Number" || alias_name.is_empty() || alias_name == "UnnamedTerm" {
+            // Optionally print a warning or log this case
+            // e.g. println!("Skipping type alias for problematic/reserved term name: {} -> {}", term_name_original, alias_name);
+            continue;
+        }
+
+        let mapped_rust_type = if term_name_original.starts_with('%') {
+            "Number"
+        } else {
+            "Generic"
+        };
+        type_aliases_str.push_str(&format!("    type {} = {};\n", alias_name, mapped_rust_type));
+    }
+    type_aliases_str.push_str("    // ---- End Generated Term Aliases ----\n");
+    type_aliases_str
 }
 
 
