@@ -4,7 +4,6 @@ extern crate rustc_driver;
 
 use tree_sitter_spthy::LANGUAGE;
 use tree_sitter;
-use tree_sitter::Node;
 use std::fs;
 
 fn main() {
@@ -14,7 +13,7 @@ fn main() {
         .expect("Error loading Spthy parser");
     let code = fs::read_to_string("test.spthy").unwrap();
 
-    let mut tree = parser.parse(code, None).unwrap();
+    let tree = parser.parse(code, None).unwrap();
     let root_node = tree.root_node();
     println!("{:?}", root_node);
     assert!(!root_node.has_error());
