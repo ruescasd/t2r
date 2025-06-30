@@ -58,7 +58,7 @@ rule SignConfiguration [role="Trustee"]:
       !Configuration(cfg_id, %n_trustees, %n_threshold)
     ]
   --[ NotConfigurationSigned(cfg_id, %self_index) ]->
-    [ A_Sign_Configuration(cfg_id, %self_index) ]
+    [ EffectSignConfiguration(cfg_id, %self_index) ]
 
 /* We split the action (not in the sense of tamarin) from the trigger condition
 so that the translation to code becomes more clear. Action rules act as a
