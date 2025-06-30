@@ -28,47 +28,68 @@ fn main() {
     let transformed_rules = transform_rules_for_ascent(parsed_rules, &fact_blacklist);
     println!("\nTransformed Rules (e.g., 'Unique' filtered): {:?}", transformed_rules);
 
+    // --- Data Collection from Transformed Rules ---
 
-    let mut all_facts: Vec<Fact> = Vec::new();
-    // Subsequent logic will use transformed_rules
-    for rule in &transformed_rules {
-        all_facts.extend(rule.premises.iter().cloned());
-        all_facts.extend(rule.actions.iter().cloned());
-        all_facts.extend(rule.conclusions.iter().cloned());
-    }
+    // Unique AscentFacts for relation declarations: (name, arity) -> Vec<original_term_strings>
+    // We only care about the structure for declaration, not is_negated here.
+    let mut unique_ascent_fact_signatures: HashMap<(String, usize), Vec<String>> = HashMap::new();
 
-    // Store unique facts by (name, arity) -> Fact. This way we keep one representative Fact.
-    let mut unique_facts_map: HashMap<(String, usize), Fact> = HashMap::new();
-    for fact in all_facts {
-        let signature = (fact.name.clone(), fact.terms.len());
-        unique_facts_map.entry(signature).or_insert(fact);
-    }
+    // Unique AscentEffects for struct generation: (struct_name, arity) -> Vec<original_term_strings>
+    let mut unique_ascent_effect_signatures: HashMap<(String, usize), Vec<String>> = HashMap::new();
 
-    let unique_relation_declarations: Vec<&Fact> = unique_facts_map.values().collect();
-
-    println!("\nUnique Facts for Relation Declarations (Name, Arity, Example Terms, IsPersistent):");
-    for fact in &unique_relation_declarations {
-        println!("  - Name: {}, Arity: {}, Terms: {:?}, Persistent: {}", fact.name, fact.terms.len(), fact.terms, fact.is_persistent);
-    }
-
-    // Step 1: Extract All Unique Term Names
     let mut unique_term_names: HashSet<String> = HashSet::new();
-    // This should iterate over transformed_rules to get terms for Ascent-relevant facts
-    for rule in &transformed_rules {
-        for fact_collection in [&rule.premises, &rule.actions, &rule.conclusions] {
-            for fact in fact_collection { // These facts are already filtered by the transformation
-                for term in &fact.terms {
-                    unique_term_names.insert(term.clone());
-                }
+
+    for ascent_rule in &transformed_rules {
+        for ascent_fact in &ascent_rule.premises {
+            unique_ascent_fact_signatures
+                .entry((ascent_fact.name.clone(), ascent_fact.terms.len()))
+                .or_insert_with(|| ascent_fact.terms.clone());
+            for term in &ascent_fact.terms {
+                unique_term_names.insert(term.clone());
+            }
+        }
+        for ascent_fact in &ascent_rule.conclusions {
+            unique_ascent_fact_signatures
+                .entry((ascent_fact.name.clone(), ascent_fact.terms.len()))
+                .or_insert_with(|| ascent_fact.terms.clone());
+            for term in &ascent_fact.terms {
+                unique_term_names.insert(term.clone());
+            }
+        }
+        for ascent_effect in &ascent_rule.effects {
+            unique_ascent_effect_signatures
+                .entry((ascent_effect.struct_name.clone(), ascent_effect.terms.len()))
+                .or_insert_with(|| ascent_effect.terms.clone());
+            for term in &ascent_effect.terms {
+                unique_term_names.insert(term.clone());
             }
         }
     }
-    println!("\nUnique Term Names: {:?}", unique_term_names);
 
-    // Removed test prints for helper functions from main
+    println!("\nUnique AscentFact Signatures for Relations (Name, Arity, ExampleTerms):");
+    for ((name, arity), terms) in &unique_ascent_fact_signatures {
+        println!("  - Name: {}, Arity: {}, Terms: {:?}", name, arity, terms);
+    }
 
-    let ascent_module_string = generate_ascent_module(&unique_relation_declarations, &unique_term_names);
-    println!("\nGenerated Ascent Module:\n{}", ascent_module_string);
+    println!("\nUnique AscentEffect Signatures for Structs (StructName, Arity, ExampleTerms):");
+    for ((name, arity), terms) in &unique_ascent_effect_signatures {
+        println!("  - StructName: {}, Arity: {}, Terms: {:?}", name, arity, terms);
+    }
+
+    println!("\nUnique Term Names (from Ascent structures): {:?}", unique_term_names);
+
+    // generate_ascent_module will need to be updated significantly in Phase 3.
+    // For now, let's pass the new collections. It will likely fail or produce partial output.
+    // We'll create placeholder structs from unique_ascent_fact_signatures to pass to the old generate_ascent_module signature for now.
+    // This is a temporary shim.
+    let temp_facts_for_gen: Vec<Fact> = unique_ascent_fact_signatures.iter().map(|((name, _arity), terms)| {
+        Fact { name: name.clone(), terms: terms.clone(), original_text: String::new(), is_persistent: true } // is_persistent is arbitrary here
+    }).collect();
+    let temp_facts_refs_for_gen: Vec<&Fact> = temp_facts_for_gen.iter().collect();
+
+
+    let ascent_module_string = generate_ascent_module(&temp_facts_refs_for_gen, &unique_term_names);
+    println!("\nGenerated Ascent Module (intermediate state):\n{}", ascent_module_string);
 
 
     // Read the code again for printing, as `parser.parse` takes ownership
@@ -145,27 +166,83 @@ fn extract_rules(root_node: &tree_sitter::Node, source: &[u8]) -> Vec<Rule> {
 }
 
 // Note: `parsed_rules` is moved into this function.
-fn transform_rules_for_ascent(parsed_rules: Vec<Rule>, fact_blacklist: &HashSet<String>) -> Vec<Rule> {
-    let mut transformed_rules_vec = Vec::new();
+fn transform_rules_for_ascent(parsed_rules: Vec<Rule>, fact_blacklist: &HashSet<String>) -> Vec<AscentRule> {
+    let mut transformed_ascent_rules = Vec::new();
 
-    for rule in parsed_rules { // rule is Rule, not &Rule
-        let filter_facts = |facts_list: &Vec<Fact>| -> Vec<Fact> {
-            facts_list.iter()
-                .filter(|fact| !fact_blacklist.contains(&fact.name))
-                .cloned()
-                .collect()
-        };
+    for parsed_rule in parsed_rules {
+        let mut current_ascent_premises: Vec<AscentFact> = Vec::new();
+        let mut current_ascent_conclusions: Vec<AscentFact> = Vec::new();
+        let mut current_ascent_effects: Vec<AscentEffect> = Vec::new();
 
-        // Create a new Rule with filtered facts
-        let transformed_rule = Rule {
-            name: rule.name, // No need to clone if rule is owned
-            premises: filter_facts(&rule.premises),
-            actions: filter_facts(&rule.actions),
-            conclusions: filter_facts(&rule.conclusions),
+        // Process Tamarin Premises
+        for fact in &parsed_rule.premises {
+            if fact_blacklist.contains(&fact.name) {
+                continue;
+            }
+            let (ascent_fact_name, is_negated) = if fact.name.starts_with("Not") {
+                (fact.name["Not".len()..].to_string(), true)
+            } else {
+                (fact.name.clone(), false)
+            };
+            current_ascent_premises.push(AscentFact {
+                name: ascent_fact_name,
+                terms: fact.terms.clone(),
+                is_negated,
+            });
+        }
+
+        // Process Tamarin Actions (as Ascent Premises)
+        for fact in &parsed_rule.actions {
+            if fact_blacklist.contains(&fact.name) {
+                continue;
+            }
+            let (ascent_fact_name, is_negated) = if fact.name.starts_with("Not") {
+                (fact.name["Not".len()..].to_string(), true)
+            } else {
+                (fact.name.clone(), false)
+            };
+            current_ascent_premises.push(AscentFact { // Add to premises
+                name: ascent_fact_name,
+                terms: fact.terms.clone(),
+                is_negated,
+            });
+        }
+
+        // Process Tamarin Conclusions (as Ascent Conclusions or Effects)
+        for fact in &parsed_rule.conclusions {
+            if fact_blacklist.contains(&fact.name) {
+                continue;
+            }
+            if fact.name.starts_with("Effect") {
+                let struct_name = fact.name["Effect".len()..].to_string();
+                // A more robust way to get struct_name would be to_camel_case on the remainder,
+                // but for now, direct stripping is used as per EffectSignConfiguration -> SignConfiguration example.
+                // We might need to ensure struct_name is a valid CamelCase identifier later.
+                // For now, assume EffectXyz will result in Xyz.
+                current_ascent_effects.push(AscentEffect {
+                    name: fact.name.clone(), // Original name "EffectSomething"
+                    struct_name,             // "Something"
+                    terms: fact.terms.clone(),
+                });
+            } else {
+                // Regular conclusion
+                current_ascent_conclusions.push(AscentFact {
+                    name: fact.name.clone(), // Conclusion names are used as is
+                    terms: fact.terms.clone(),
+                    is_negated: false, // Conclusions are typically not negated
+                });
+            }
+        }
+
+        let ascent_rule = AscentRule {
+            name: parsed_rule.name, // Name is preserved
+            premises: current_ascent_premises,
+            conclusions: current_ascent_conclusions,
+            effects: current_ascent_effects,
         };
-        transformed_rules_vec.push(transformed_rule);
+        transformed_ascent_rules.push(ascent_rule);
     }
-    transformed_rules_vec
+    transformed_ascent_rules
 }
 
 // Helper to check for patterns that should directly map to "Number" in relation signatures
