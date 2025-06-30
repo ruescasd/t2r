@@ -14,17 +14,24 @@ fn main() {
     let root_node = tree.root_node();
     // assert!(!root_node.has_error()); // TODO: Temporarily removed to inspect parsing errors
 
-    // Step 1: Define Fact Blacklist (from previous step, already in place)
+    // Blacklist will be defined later, before the transformation step.
+    // For now, extract_rules parses everything.
+    let source_code = fs::read_to_string("test.spthy").unwrap();
+    let parsed_rules = extract_rules(&root_node, source_code.as_bytes());
+    println!("Parsed Rules (Unfiltered): {:?}", parsed_rules);
+
+    // Define the blacklist (as per next step, but needed for the call)
     let mut fact_blacklist: HashSet<String> = HashSet::new();
     fact_blacklist.insert("Unique".to_string());
 
-    let source_code = fs::read_to_string("test.spthy").unwrap();
-    // Pass blacklist to extract_rules
-    let rules = extract_rules(&root_node, source_code.as_bytes(), &fact_blacklist);
-    println!("Filtered Rules: {:?}", rules); // Keep this for now to see filtered rules
+    // Step 2: Implement Transformation Function (called in Step 3 of plan)
+    let transformed_rules = transform_rules_for_ascent(parsed_rules, &fact_blacklist);
+    println!("\nTransformed Rules (e.g., 'Unique' filtered): {:?}", transformed_rules);
+
 
     let mut all_facts: Vec<Fact> = Vec::new();
-    for rule in &rules {
+    // Subsequent logic will use transformed_rules
+    for rule in &transformed_rules {
         all_facts.extend(rule.premises.iter().cloned());
         all_facts.extend(rule.actions.iter().cloned());
         all_facts.extend(rule.conclusions.iter().cloned());
@@ -46,9 +53,10 @@ fn main() {
 
     // Step 1: Extract All Unique Term Names
     let mut unique_term_names: HashSet<String> = HashSet::new();
-    for rule in &rules { // Iterate over filtered rules
+    // This should iterate over transformed_rules to get terms for Ascent-relevant facts
+    for rule in &transformed_rules {
         for fact_collection in [&rule.premises, &rule.actions, &rule.conclusions] {
-            for fact in fact_collection {
+            for fact in fact_collection { // These facts are already filtered by the transformation
                 for term in &fact.terms {
                     unique_term_names.insert(term.clone());
                 }
@@ -85,8 +93,8 @@ pub struct Rule {
     // Add a field to store attributes if needed, or parse directly
 }
 
-// Updated extract_rules signature
-fn extract_rules(root_node: &tree_sitter::Node, source: &[u8], fact_blacklist: &HashSet<String>) -> Vec<Rule> {
+// Reverted extract_rules signature
+fn extract_rules(root_node: &tree_sitter::Node, source: &[u8]) -> Vec<Rule> {
     let mut rules_vec: Vec<Rule> = Vec::new();
     for i in 0..root_node.child_count() {
         let node = root_node.child(i).unwrap();
@@ -101,8 +109,8 @@ fn extract_rules(root_node: &tree_sitter::Node, source: &[u8], fact_blacklist: &
 
             if let Some(simple_rule_node) = simple_rule_node_opt {
                 // Attempt to extract rule details; this will now filter by role
-                // Pass fact_blacklist to extract_rule_details
-                if let Some(rule) = extract_rule_details(&simple_rule_node, source, fact_blacklist) {
+                // No blacklist passed here anymore
+                if let Some(rule) = extract_rule_details(&simple_rule_node, source) {
                     rules_vec.push(rule);
                 }
             }
@@ -110,6 +118,30 @@ fn extract_rules(root_node: &tree_sitter::Node, source: &[u8], fact_blacklist: &
         }
     }
     rules_vec
+}
+
+// Note: `parsed_rules` is moved into this function.
+fn transform_rules_for_ascent(parsed_rules: Vec<Rule>, fact_blacklist: &HashSet<String>) -> Vec<Rule> {
+    let mut transformed_rules_vec = Vec::new();
+
+    for rule in parsed_rules { // rule is Rule, not &Rule
+        let filter_facts = |facts_list: &Vec<Fact>| -> Vec<Fact> {
+            facts_list.iter()
+                .filter(|fact| !fact_blacklist.contains(&fact.name))
+                .cloned()
+                .collect()
+        };
+
+        // Create a new Rule with filtered facts
+        let transformed_rule = Rule {
+            name: rule.name, // No need to clone if rule is owned
+            premises: filter_facts(&rule.premises),
+            actions: filter_facts(&rule.actions),
+            conclusions: filter_facts(&rule.conclusions),
+        };
+        transformed_rules_vec.push(transformed_rule);
+    }
+    transformed_rules_vec
 }
 
 // Helper to check for patterns that should directly map to "Number" in relation signatures
@@ -261,8 +293,8 @@ fn parse_fact_string(fact_str: &str) -> Option<(String, Vec<String>)> {
     }
 }
 
-// Updated extract_rule_details signature
-fn extract_rule_details(simple_rule_node: &tree_sitter::Node, source: &[u8], fact_blacklist: &HashSet<String>) -> Option<Rule> {
+// Reverted extract_rule_details signature
+fn extract_rule_details(simple_rule_node: &tree_sitter::Node, source: &[u8]) -> Option<Rule> {
     let rule_name_node = simple_rule_node.child_by_field_name("rule_identifier");
     let rule_name = rule_name_node
         .map(|n| n.utf8_text(source).unwrap_or("").to_string())
@@ -314,13 +346,13 @@ fn extract_rule_details(simple_rule_node: &tree_sitter::Node, source: &[u8], fac
         let child = simple_rule_node.child(i).unwrap();
         match child.kind() {
             "premise" => {
-                premises.extend(extract_facts(&child, source, fact_blacklist));
+                premises.extend(extract_facts(&child, source)); // Reverted: No blacklist
             }
             "action_fact" => {
-                actions.extend(extract_facts(&child, source, fact_blacklist));
+                actions.extend(extract_facts(&child, source)); // Reverted: No blacklist
             }
             "conclusion" => {
-                conclusions.extend(extract_facts(&child, source, fact_blacklist));
+                conclusions.extend(extract_facts(&child, source)); // Reverted: No blacklist
             }
             _ => {}
         }
@@ -329,13 +361,13 @@ fn extract_rule_details(simple_rule_node: &tree_sitter::Node, source: &[u8], fac
     Some(Rule { name: rule_name, premises, actions, conclusions })
 }
 
-// Updated extract_facts signature and logic (incorporating blacklist check)
-fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8], fact_blacklist: &HashSet<String>) -> Vec<Fact> {
+// Reverted extract_facts signature and logic (no blacklist check)
+fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8]) -> Vec<Fact> {
     let mut facts = Vec::new();
     let mut i = 0;
     while i < parent_node.child_count() {
         let child = parent_node.child(i).unwrap();
-        let mut fact_to_add: Option<Fact> = None;
+        // let mut fact_to_add: Option<Fact> = None; // No longer needed with direct push
 
         if child.kind() == "!" {
             if i + 1 < parent_node.child_count() {
@@ -343,16 +375,10 @@ fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8], fact_blacklist:
                 if next_child.kind() == "persistent_fact" {
                     let original_fact_text = next_child.utf8_text(source).unwrap_or("").trim().to_string();
                     if !original_fact_text.is_empty() {
-                        if let Some((name, terms)) = parse_fact_string(&original_fact_text) {
-                            if !fact_blacklist.contains(&name) {
-                                fact_to_add = Some(Fact { original_text: original_fact_text, name, terms, is_persistent: true });
-                            }
-                        } else {
-                             let name = format!("UNPARSED_FACT: {}", original_fact_text);
-                             if !fact_blacklist.contains(&name) {
-                                fact_to_add = Some(Fact { original_text: original_fact_text, name, terms: Vec::new(), is_persistent: true});
-                             }
-                        }
+                        let (name, terms) = parse_fact_string(&original_fact_text)
+                            .unwrap_or_else(|| (format!("UNPARSED_FACT: {}", original_fact_text), Vec::new()));
+                        // No blacklist check, directly add
+                        facts.push(Fact { original_text: original_fact_text, name, terms, is_persistent: true });
                     }
                     i += 1;
                 }
@@ -368,42 +394,26 @@ fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8], fact_blacklist:
                 };
 
                 if !text_to_parse.is_empty() {
-                    if let Some((name, terms)) = parse_fact_string(text_to_parse){
-                        if !fact_blacklist.contains(&name) {
-                           fact_to_add = Some(Fact { original_text: original_fact_text_full.clone(), name, terms, is_persistent: true });
-                        }
-                    } else {
-                        let name = format!("UNPARSED_FACT: {}", text_to_parse);
-                        if !fact_blacklist.contains(&name) {
-                            fact_to_add = Some(Fact { original_text: original_fact_text_full.clone(), name, terms: Vec::new(), is_persistent: true});
-                        }
-                    }
+                    let (name, terms) = parse_fact_string(text_to_parse)
+                        .unwrap_or_else(|| (format!("UNPARSED_FACT: {}", text_to_parse), Vec::new()));
+                    // No blacklist check, directly add
+                    facts.push(Fact { original_text: original_fact_text_full.clone(), name, terms, is_persistent: true });
                 } else if is_persistent_due_to_prefix && text_to_parse.is_empty() {
                      let name = "INVALID_EMPTY_PERSISTENT_FACT".to_string();
-                     if !fact_blacklist.contains(&name) {
-                        fact_to_add = Some(Fact { original_text: original_fact_text_full.clone(), name, terms: Vec::new(), is_persistent: true});
-                     }
+                    // No blacklist check, directly add
+                    facts.push(Fact { original_text: original_fact_text_full.clone(), name, terms: Vec::new(), is_persistent: true});
                 }
             }
         } else if child.kind() == "linear_fact" {
             let original_fact_text = child.utf8_text(source).unwrap_or("").trim().to_string();
             if !original_fact_text.is_empty() {
-                 if let Some((name, terms)) = parse_fact_string(&original_fact_text) {
-                    if !fact_blacklist.contains(&name) {
-                        fact_to_add = Some(Fact { original_text: original_fact_text, name, terms, is_persistent: false });
-                    }
-                 } else {
-                    let name = format!("UNPARSED_FACT: {}", original_fact_text);
-                    if !fact_blacklist.contains(&name) {
-                        fact_to_add = Some(Fact { original_text: original_fact_text, name, terms: Vec::new(), is_persistent: false});
-                    }
-                 }
+                 let (name, terms) = parse_fact_string(&original_fact_text)
+                    .unwrap_or_else(|| (format!("UNPARSED_FACT: {}", original_fact_text), Vec::new()));
+                // No blacklist check, directly add
+                facts.push(Fact { original_text: original_fact_text, name, terms, is_persistent: false });
             }
         }
-
-        if let Some(fact) = fact_to_add {
-            facts.push(fact);
-        }
+        // No fact_to_add option, directly pushed if parsed.
         i += 1;
     }
     facts
