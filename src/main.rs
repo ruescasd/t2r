@@ -93,6 +93,30 @@ pub struct Rule {
     // Add a field to store attributes if needed, or parse directly
 }
 
+// --- Structs for Ascent Transformation ---
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AscentFact {
+    pub name: String,          // Name of the fact, e.g., "ConfigurationSigned" (after stripping "Not")
+    pub terms: Vec<String>,    // Original term strings, e.g., ["cfg_id", "%1"]
+    pub is_negated: bool,      // True if this fact is negated in a premise
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AscentEffect {
+    pub name: String,          // Original full name, e.g., "EffectSignConfiguration"
+    pub struct_name: String,   // Name of the struct to be generated, e.g., "SignConfiguration"
+    pub terms: Vec<String>,    // Original term strings
+}
+
+#[derive(Debug, Clone)]
+pub struct AscentRule {
+    pub name: String, // Original Tamarin rule name
+    pub premises: Vec<AscentFact>,
+    pub conclusions: Vec<AscentFact>,
+    pub effects: Vec<AscentEffect>,
+}
+// --- End Structs for Ascent Transformation ---
+
 // Reverted extract_rules signature
 fn extract_rules(root_node: &tree_sitter::Node, source: &[u8]) -> Vec<Rule> {
     let mut rules_vec: Vec<Rule> = Vec::new();
