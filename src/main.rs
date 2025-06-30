@@ -85,7 +85,8 @@ fn main() {
     let ascent_module_string = generate_ascent_module(
         &unique_ascent_fact_signatures,
         &unique_ascent_effect_signatures,
-        &unique_term_names
+        &unique_term_names,
+        &transformed_rules // Add transformed_rules to the call
     );
     println!("\nGenerated Ascent Module:\n{}", ascent_module_string);
 
@@ -521,7 +522,8 @@ fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8]) -> Vec<Fact> {
 fn generate_ascent_module(
     unique_ascent_fact_signatures: &HashMap<(String, usize), Vec<String>>,
     unique_ascent_effect_signatures: &HashMap<(String, usize), Vec<String>>,
-    unique_term_names: &HashSet<String>
+    unique_term_names: &HashSet<String>,
+    transformed_rules: &[AscentRule] // Add new parameter
 ) -> String {
     let mut rust_keywords_map: HashMap<String, String> = HashMap::new();
     rust_keywords_map.insert("type".to_string(), "type_".to_string());
@@ -563,10 +565,8 @@ fn generate_ascent_module(
     // Generate Standard Relations
     if !unique_ascent_fact_signatures.is_empty() {
         module_content.push_str("        // ---- Standard Relations ----\n");
-        // Sort for consistent output order
         let mut sorted_fact_relations: Vec<_> = unique_ascent_fact_signatures.iter().collect();
         sorted_fact_relations.sort_by_key(|((name, _arity), _terms)| name.clone());
-
         for ((name, _arity), terms) in sorted_fact_relations {
             let relation_name = rust_keywords_map.get(name).unwrap_or(name).to_string();
             let param_types: Vec<String> = terms.iter()
@@ -580,17 +580,57 @@ fn generate_ascent_module(
     // Generate Effect Relations
     if !unique_ascent_effect_signatures.is_empty() {
         module_content.push_str("        // ---- Effect Relations ----\n");
-        // Sort for consistent output order (already sorted if reusing sorted_effect_signatures from struct gen)
-        // For clarity, let's re-sort or ensure it's done if not reusing.
         let mut sorted_effect_relations: Vec<_> = unique_ascent_effect_signatures.iter().collect();
         sorted_effect_relations.sort_by_key(|((struct_name, _arity), _terms)| struct_name.clone());
-
         for ((struct_name, _arity), _terms) in sorted_effect_relations {
-            // The relation name will be effect_StructName, e.g., effect_SignConfiguration
-            // The parameter type is simply the StructName itself.
             module_content.push_str(&format!("        relation effect_{}({});\n", struct_name, struct_name));
         }
-        module_content.push_str("        // ---- End Effect Relations ----\n");
+        module_content.push_str("        // ---- End Effect Relations ----\n\n");
+    }
+
+    // Generate Ascent Rule Bodies
+    if !transformed_rules.is_empty() {
+        module_content.push_str("        // ---- Ascent Rules ----\n");
+        for ascent_rule in transformed_rules {
+            let premises_str: Vec<String> = ascent_rule.premises.iter().map(|p_fact| {
+                let terms_str: Vec<String> = p_fact.terms.iter()
+                    .map(|t| format_tamarin_term_for_ascent_rule(t))
+                    .collect();
+                let negation_str = if p_fact.is_negated { "!" } else { "" };
+                format!("{}{}({})", negation_str, p_fact.name, terms_str.join(", "))
+            }).collect();
+
+            let body_str = premises_str.join(", ");
+
+            for conclusion_fact in &ascent_rule.conclusions {
+                let head_terms_str: Vec<String> = conclusion_fact.terms.iter()
+                    .map(|t| format_tamarin_term_for_ascent_rule(t))
+                    .collect();
+                let head_str = format!("{}({})", conclusion_fact.name, head_terms_str.join(", "));
+                if body_str.is_empty() {
+                    module_content.push_str(&format!("        {}.\n", head_str));
+                } else {
+                    module_content.push_str(&format!("        {} <-- {};\n", head_str, body_str));
+                }
+            }
+
+            for effect in &ascent_rule.effects {
+                let effect_terms_str: Vec<String> = effect.terms.iter()
+                    .map(|t| format_tamarin_term_for_ascent_rule(t))
+                    .collect();
+                // Head: effect_StructName(StructName(term1, term2, ...))
+                let head_str = format!("effect_{}({}({}))",
+                                       effect.struct_name,
+                                       effect.struct_name,
+                                       effect_terms_str.join(", "));
+                if body_str.is_empty() {
+                    module_content.push_str(&format!("        {}.\n", head_str));
+                } else {
+                    module_content.push_str(&format!("        {} <-- {};\n", head_str, body_str));
+                }
+            }
+        }
+        module_content.push_str("        // ---- End Ascent Rules ----\n");
     }
 
     module_content.push_str("    }\n");
@@ -639,6 +679,38 @@ fn generate_type_aliases(term_names: &HashSet<String>) -> String {
     }
     type_aliases_str.push_str("    // ---- End Generated Term Aliases ----\n");
     type_aliases_str
+}
+
+fn format_tamarin_term_for_ascent_rule(term_str: &str) -> String {
+    let mut s = term_str.to_string();
+
+    if s.starts_with('~') {
+        s = s[1..].to_string();
+    }
+
+    s = s.replace("%", "");
+
+    // Normalize whitespace to handle cases like "i  +  1" becoming "i + 1"
+    // and also trims leading/trailing whitespace that might have been around '%'
+    s.split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_tamarin_term_for_ascent_rule() {
+        assert_eq!(format_tamarin_term_for_ascent_rule("%1"), "1");
+        assert_eq!(format_tamarin_term_for_ascent_rule("%i"), "i");
+        assert_eq!(format_tamarin_term_for_ascent_rule("%self_index"), "self_index");
+        assert_eq!(format_tamarin_term_for_ascent_rule("cfg_id"), "cfg_id");
+        assert_eq!(format_tamarin_term_for_ascent_rule("~id"), "id");
+        assert_eq!(format_tamarin_term_for_ascent_rule("%i %+ %1"), "i + 1");
+        assert_eq!(format_tamarin_term_for_ascent_rule("%i%+%1"), "i+1"); // Test without spaces around operator
+        assert_eq!(format_tamarin_term_for_ascent_rule("  %spaced_out_term  "), "spaced_out_term");
+        assert_eq!(format_tamarin_term_for_ascent_rule("%term %with %spaces"), "term with spaces");
+    }
 }
 
 
