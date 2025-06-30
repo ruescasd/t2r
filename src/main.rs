@@ -81,15 +81,13 @@ fn main() {
     // generate_ascent_module will need to be updated significantly in Phase 3.
     // For now, let's pass the new collections. It will likely fail or produce partial output.
     // We'll create placeholder structs from unique_ascent_fact_signatures to pass to the old generate_ascent_module signature for now.
-    // This is a temporary shim.
-    let temp_facts_for_gen: Vec<Fact> = unique_ascent_fact_signatures.iter().map(|((name, _arity), terms)| {
-        Fact { name: name.clone(), terms: terms.clone(), original_text: String::new(), is_persistent: true } // is_persistent is arbitrary here
-    }).collect();
-    let temp_facts_refs_for_gen: Vec<&Fact> = temp_facts_for_gen.iter().collect();
-
-
-    let ascent_module_string = generate_ascent_module(&temp_facts_refs_for_gen, &unique_term_names);
-    println!("\nGenerated Ascent Module (intermediate state):\n{}", ascent_module_string);
+    // Remove temporary shim for generate_ascent_module call
+    let ascent_module_string = generate_ascent_module(
+        &unique_ascent_fact_signatures,
+        &unique_ascent_effect_signatures,
+        &unique_term_names
+    );
+    println!("\nGenerated Ascent Module:\n{}", ascent_module_string);
 
 
     // Read the code again for printing, as `parser.parse` takes ownership
@@ -520,7 +518,11 @@ fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8]) -> Vec<Fact> {
     facts
 }
 
-fn generate_ascent_module(unique_facts: &[&Fact], unique_term_names: &HashSet<String>) -> String {
+fn generate_ascent_module(
+    unique_ascent_fact_signatures: &HashMap<(String, usize), Vec<String>>,
+    unique_ascent_effect_signatures: &HashMap<(String, usize), Vec<String>>,
+    unique_term_names: &HashSet<String>
+) -> String {
     let mut rust_keywords_map: HashMap<String, String> = HashMap::new();
     rust_keywords_map.insert("type".to_string(), "type_".to_string());
     rust_keywords_map.insert("match".to_string(), "match_".to_string());
@@ -534,26 +536,61 @@ fn generate_ascent_module(unique_facts: &[&Fact], unique_term_names: &HashSet<St
     module_content.push_str(&generate_type_aliases(unique_term_names));
     module_content.push_str("\n");
 
-    // Removed the "Potentially Redundant Manual Aliases" section.
-    // We will rely on the generated aliases. If specific mappings like CfgHash -> SomeSpecialString
-    // are needed, that would be a more advanced feature for the type alias generation.
+    // Implement Effect Struct Generation
+    if !unique_ascent_effect_signatures.is_empty() {
+        module_content.push_str("    // ---- Effect Struct Definitions ----\n");
+        // Sort for consistent output order
+        let mut sorted_effect_signatures: Vec<_> = unique_ascent_effect_signatures.iter().collect();
+        sorted_effect_signatures.sort_by_key(|((name, _arity), _terms)| name.clone());
+
+        for ((struct_name, _arity), terms) in sorted_effect_signatures {
+            let field_types: Vec<String> = terms.iter()
+                .map(|term_original_str| get_term_type_representation(term_original_str))
+                .collect();
+
+            let struct_def = format!(
+                "    #[derive(Debug, Clone, PartialEq, Eq, Hash)]\n    pub struct {}({});\n",
+                struct_name, // This is already the StructName, e.g., "SignConfiguration"
+                field_types.join(", ")
+            );
+            module_content.push_str(&struct_def);
+        }
+        module_content.push_str("    // ---- End Effect Struct Definitions ----\n\n");
+    }
 
     module_content.push_str("    ascent! {\n");
 
-    for fact in unique_facts {
-        let relation_name = rust_keywords_map.get(&fact.name).unwrap_or(&fact.name).to_string();
+    // Generate Standard Relations
+    if !unique_ascent_fact_signatures.is_empty() {
+        module_content.push_str("        // ---- Standard Relations ----\n");
+        // Sort for consistent output order
+        let mut sorted_fact_relations: Vec<_> = unique_ascent_fact_signatures.iter().collect();
+        sorted_fact_relations.sort_by_key(|((name, _arity), _terms)| name.clone());
 
-        let mut term_type_aliases: Vec<String> = Vec::new();
-        if fact.terms.is_empty() {
-            // No types needed for 0-arity relations, type_list will be empty
-        } else {
-            for term_original_str in &fact.terms {
-                term_type_aliases.push(get_term_type_representation(term_original_str));
-            }
+        for ((name, _arity), terms) in sorted_fact_relations {
+            let relation_name = rust_keywords_map.get(name).unwrap_or(name).to_string();
+            let param_types: Vec<String> = terms.iter()
+                .map(|term_original_str| get_term_type_representation(term_original_str))
+                .collect();
+            module_content.push_str(&format!("        relation {}({});\n", relation_name, param_types.join(", ")));
         }
+        module_content.push_str("        // ---- End Standard Relations ----\n\n");
+    }
 
-        let type_list = term_type_aliases.join(", ");
-        module_content.push_str(&format!("        relation {}({});\n", relation_name, type_list));
+    // Generate Effect Relations
+    if !unique_ascent_effect_signatures.is_empty() {
+        module_content.push_str("        // ---- Effect Relations ----\n");
+        // Sort for consistent output order (already sorted if reusing sorted_effect_signatures from struct gen)
+        // For clarity, let's re-sort or ensure it's done if not reusing.
+        let mut sorted_effect_relations: Vec<_> = unique_ascent_effect_signatures.iter().collect();
+        sorted_effect_relations.sort_by_key(|((struct_name, _arity), _terms)| struct_name.clone());
+
+        for ((struct_name, _arity), _terms) in sorted_effect_relations {
+            // The relation name will be effect_StructName, e.g., effect_SignConfiguration
+            // The parameter type is simply the StructName itself.
+            module_content.push_str(&format!("        relation effect_{}({});\n", struct_name, struct_name));
+        }
+        module_content.push_str("        // ---- End Effect Relations ----\n");
     }
 
     module_content.push_str("    }\n");
