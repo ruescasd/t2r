@@ -14,8 +14,13 @@ fn main() {
     let root_node = tree.root_node();
     // assert!(!root_node.has_error()); // TODO: Temporarily removed to inspect parsing errors
 
+    // Step 1: Define Fact Blacklist (from previous step, already in place)
+    let mut fact_blacklist: HashSet<String> = HashSet::new();
+    fact_blacklist.insert("Unique".to_string());
+
     let source_code = fs::read_to_string("test.spthy").unwrap();
-    let rules = extract_rules(&root_node, source_code.as_bytes());
+    // Pass blacklist to extract_rules
+    let rules = extract_rules(&root_node, source_code.as_bytes(), &fact_blacklist);
     println!("Filtered Rules: {:?}", rules); // Keep this for now to see filtered rules
 
     let mut all_facts: Vec<Fact> = Vec::new();
@@ -80,8 +85,9 @@ pub struct Rule {
     // Add a field to store attributes if needed, or parse directly
 }
 
-fn extract_rules(root_node: &tree_sitter::Node, source: &[u8]) -> Vec<Rule> {
-    let mut rules_vec: Vec<Rule> = Vec::new(); // Renamed to avoid conflict
+// Updated extract_rules signature
+fn extract_rules(root_node: &tree_sitter::Node, source: &[u8], fact_blacklist: &HashSet<String>) -> Vec<Rule> {
+    let mut rules_vec: Vec<Rule> = Vec::new();
     for i in 0..root_node.child_count() {
         let node = root_node.child(i).unwrap();
         if node.kind() == "rule" {
@@ -95,7 +101,8 @@ fn extract_rules(root_node: &tree_sitter::Node, source: &[u8]) -> Vec<Rule> {
 
             if let Some(simple_rule_node) = simple_rule_node_opt {
                 // Attempt to extract rule details; this will now filter by role
-                if let Some(rule) = extract_rule_details(&simple_rule_node, source) {
+                // Pass fact_blacklist to extract_rule_details
+                if let Some(rule) = extract_rule_details(&simple_rule_node, source, fact_blacklist) {
                     rules_vec.push(rule);
                 }
             }
@@ -254,8 +261,8 @@ fn parse_fact_string(fact_str: &str) -> Option<(String, Vec<String>)> {
     }
 }
 
-
-fn extract_rule_details(simple_rule_node: &tree_sitter::Node, source: &[u8]) -> Option<Rule> {
+// Updated extract_rule_details signature
+fn extract_rule_details(simple_rule_node: &tree_sitter::Node, source: &[u8], fact_blacklist: &HashSet<String>) -> Option<Rule> {
     let rule_name_node = simple_rule_node.child_by_field_name("rule_identifier");
     let rule_name = rule_name_node
         .map(|n| n.utf8_text(source).unwrap_or("").to_string())
@@ -307,13 +314,13 @@ fn extract_rule_details(simple_rule_node: &tree_sitter::Node, source: &[u8]) -> 
         let child = simple_rule_node.child(i).unwrap();
         match child.kind() {
             "premise" => {
-                premises.extend(extract_facts(&child, source));
+                premises.extend(extract_facts(&child, source, fact_blacklist));
             }
             "action_fact" => {
-                actions.extend(extract_facts(&child, source));
+                actions.extend(extract_facts(&child, source, fact_blacklist));
             }
             "conclusion" => {
-                conclusions.extend(extract_facts(&child, source));
+                conclusions.extend(extract_facts(&child, source, fact_blacklist));
             }
             _ => {}
         }
@@ -322,11 +329,13 @@ fn extract_rule_details(simple_rule_node: &tree_sitter::Node, source: &[u8]) -> 
     Some(Rule { name: rule_name, premises, actions, conclusions })
 }
 
-fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8]) -> Vec<Fact> {
+// Updated extract_facts signature and logic (incorporating blacklist check)
+fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8], fact_blacklist: &HashSet<String>) -> Vec<Fact> {
     let mut facts = Vec::new();
     let mut i = 0;
     while i < parent_node.child_count() {
         let child = parent_node.child(i).unwrap();
+        let mut fact_to_add: Option<Fact> = None;
 
         if child.kind() == "!" {
             if i + 1 < parent_node.child_count() {
@@ -334,11 +343,18 @@ fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8]) -> Vec<Fact> {
                 if next_child.kind() == "persistent_fact" {
                     let original_fact_text = next_child.utf8_text(source).unwrap_or("").trim().to_string();
                     if !original_fact_text.is_empty() {
-                        let (name, terms) = parse_fact_string(&original_fact_text)
-                            .unwrap_or_else(|| (format!("UNPARSED_FACT: {}", original_fact_text), Vec::new()));
-                        facts.push(Fact { original_text: original_fact_text, name, terms, is_persistent: true });
+                        if let Some((name, terms)) = parse_fact_string(&original_fact_text) {
+                            if !fact_blacklist.contains(&name) {
+                                fact_to_add = Some(Fact { original_text: original_fact_text, name, terms, is_persistent: true });
+                            }
+                        } else {
+                             let name = format!("UNPARSED_FACT: {}", original_fact_text);
+                             if !fact_blacklist.contains(&name) {
+                                fact_to_add = Some(Fact { original_text: original_fact_text, name, terms: Vec::new(), is_persistent: true});
+                             }
+                        }
                     }
-                    i += 1; // Consume the persistent_fact node
+                    i += 1;
                 }
             }
         } else if child.kind() == "persistent_fact" {
@@ -352,20 +368,41 @@ fn extract_facts(parent_node: &tree_sitter::Node, source: &[u8]) -> Vec<Fact> {
                 };
 
                 if !text_to_parse.is_empty() {
-                    let (name, terms) = parse_fact_string(text_to_parse)
-                        .unwrap_or_else(|| (format!("UNPARSED_FACT: {}", text_to_parse), Vec::new()));
-                    facts.push(Fact { original_text: original_fact_text_full.clone(), name, terms, is_persistent: true });
-                } else if is_persistent_due_to_prefix && text_to_parse.is_empty() { // e.g. just "!" which is unlikely a valid fact
-                    facts.push(Fact { original_text: original_fact_text_full.clone(), name: "INVALID_EMPTY_PERSISTENT_FACT".to_string(), terms: Vec::new(), is_persistent: true});
+                    if let Some((name, terms)) = parse_fact_string(text_to_parse){
+                        if !fact_blacklist.contains(&name) {
+                           fact_to_add = Some(Fact { original_text: original_fact_text_full.clone(), name, terms, is_persistent: true });
+                        }
+                    } else {
+                        let name = format!("UNPARSED_FACT: {}", text_to_parse);
+                        if !fact_blacklist.contains(&name) {
+                            fact_to_add = Some(Fact { original_text: original_fact_text_full.clone(), name, terms: Vec::new(), is_persistent: true});
+                        }
+                    }
+                } else if is_persistent_due_to_prefix && text_to_parse.is_empty() {
+                     let name = "INVALID_EMPTY_PERSISTENT_FACT".to_string();
+                     if !fact_blacklist.contains(&name) {
+                        fact_to_add = Some(Fact { original_text: original_fact_text_full.clone(), name, terms: Vec::new(), is_persistent: true});
+                     }
                 }
             }
         } else if child.kind() == "linear_fact" {
             let original_fact_text = child.utf8_text(source).unwrap_or("").trim().to_string();
             if !original_fact_text.is_empty() {
-                let (name, terms) = parse_fact_string(&original_fact_text)
-                    .unwrap_or_else(|| (format!("UNPARSED_FACT: {}", original_fact_text), Vec::new()));
-                facts.push(Fact { original_text: original_fact_text, name, terms, is_persistent: false });
+                 if let Some((name, terms)) = parse_fact_string(&original_fact_text) {
+                    if !fact_blacklist.contains(&name) {
+                        fact_to_add = Some(Fact { original_text: original_fact_text, name, terms, is_persistent: false });
+                    }
+                 } else {
+                    let name = format!("UNPARSED_FACT: {}", original_fact_text);
+                    if !fact_blacklist.contains(&name) {
+                        fact_to_add = Some(Fact { original_text: original_fact_text, name, terms: Vec::new(), is_persistent: false});
+                    }
+                 }
             }
+        }
+
+        if let Some(fact) = fact_to_add {
+            facts.push(fact);
         }
         i += 1;
     }
